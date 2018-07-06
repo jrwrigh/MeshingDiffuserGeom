@@ -13,9 +13,13 @@ from OCC.StlAPI import StlAPI_Writer
 from OCC.BRepMesh import BRepMesh_IncrementalMesh
 
 from OCC.SMESH import SMESH_Gen, SMESH_MeshVSLink
-from OCC.StdMeshers import (StdMeshers_Arithmetic1D, StdMeshers_TrianglePreference,
+from OCC.StdMeshers import (StdMeshers_Arithmetic1D,
+                            StdMeshers_TrianglePreference,
                             StdMeshers_Regular_1D, StdMeshers_Quadrangle_2D,
                             StdMeshers_MEFISTO_2D, StdMeshers_MaxLength)
+
+from OCC.GProp import GProp_GProps
+from OCC.BRepGProp import brepgprop_SurfaceProperties
 
 # Here is an example script of using pythonocc to create a conical diffuser
 # from nothing and save it as a STEP file. The diffuser is created via a
@@ -93,7 +97,10 @@ parser.add_argument(
     help='The path or file name that the geometry will be saved to.')
 parser.add_argument('--TEST', action="store_true")
 parser.add_argument('-v', '--verbose', dest='v', action='count', default=0)
-parser.add_argument('--filetype', type=str, help='The file type that should be output (stl, STEP, etc.)')
+parser.add_argument(
+    '--filetype',
+    type=str,
+    help='The file type that should be output (stl, STEP, etc.)')
 
 args = parser.parse_args()
 
@@ -152,93 +159,158 @@ if args.v >= 1:
     print('\n')
 
 #############################################
-#---------Input Parameters
+#---------Geometry Creation Functions
 #############################################
-# filepath = Path.cwd() / 'Testing.STP'
 
-# # Conical Diffuser Geometry Inputs
-# inletr = 50
-# inletl = 200
-# phi = 10  # in degrees
-# outletr = 60
-# outletl = 300
-# filletr = 20
 
-# Initial Parameter calculations
-phi = math.radians(phi)
+def makePoints(radii, lengths, transitionr, phi):
+    inletr, outletr = radii
+    inletl, outletl = lengths
+    transitionr = filletr
+    # Initial Parameter calculations
+    phi = math.radians(phi)
+    pntspy = []
+    # This has the math that defines the three points (p2, p3, p4) that lie on an arc.
+    pntspy.append((0, 0, 0))
+    pntspy.append((0, inletr, 0))
+    pntspy.append((inletl, inletr, 0))
+    pntspy.append((filletr * math.sin(phi / 2) + pntspy[2][0],
+                   filletr * (1 - math.cos(phi / 2)) + pntspy[2][1], 0))
+    pntspy.append((filletr * math.sin(phi) + pntspy[2][0],
+                   filletr * (1 - math.cos(phi)) + pntspy[2][1], 0))
+    pntspy.append(((outletr - inletr - (pntspy[4][1] - inletr)) / math.tan(phi)
+                   + pntspy[4][0], outletr, 0))
+    pntspy.append((pntspy[5][0] + outletl, outletr, 0))
+    pntspy.append((pntspy[5][0] + outletl, 0, 0))
 
-pntspy = []
+    if args.v >= 1: print('Points are calculated')
+    # Creating the base sketch points
+    pnts = []
+    for pnt in pntspy:
+        pnts.append(OCC.gp.gp_Pnt(*pnt))
+    if args.v >= 1: print('Points are created')
 
-# This has the math that defines the three points (p2, p3, p4) that lie on an arc.
-pntspy.append((0, 0, 0))
-pntspy.append((0, inletr, 0))
-pntspy.append((inletl, inletr, 0))
-pntspy.append((filletr * math.sin(phi / 2) + pntspy[2][0],
-               filletr * (1 - math.cos(phi / 2)) + pntspy[2][1], 0))
-pntspy.append((filletr * math.sin(phi) + pntspy[2][0],
-               filletr * (1 - math.cos(phi)) + pntspy[2][1], 0))
-pntspy.append(((outletr - inletr - (pntspy[4][1] - inletr)) / math.tan(phi) +
-               pntspy[4][0], outletr, 0))
-pntspy.append((pntspy[5][0] + outletl, outletr, 0))
-pntspy.append((pntspy[5][0] + outletl, 0, 0))
+    return pnts
 
-if args.v >= 1: print('Points are calculated')
 
-# Creating the base sketch points
-pnts = []
-for pnt in pntspy:
-    pnts.append(OCC.gp.gp_Pnt(*pnt))
+def makeEdges(pnts):
+    """ Creating the base curves and segments"""
 
-if args.v >= 1: print('Points are created')
+    # Segmentkeys shows what points form an edge (as opposed to the fillet arc)
+    segmentkeys = [(0, 1), (1, 2), (4, 5), (5, 6), (6, 7), (7, 0)]
+    segments = []
+    for key in segmentkeys:
+        segments.append(OCC.GC.GC_MakeSegment(pnts[key[0]], pnts[key[1]]))
+    # Adds edge6, which is the fillet arc
+    segments.append(OCC.GC.GC_MakeArcOfCircle(pnts[2], pnts[3], pnts[4]))
+    # Creating edges. Could also do this directly from points
+    edges = []
+    for seg in segments:
+        edges.append(BRepBuilderAPI_MakeEdge(seg.Value()))
+    if args.v >= 1: print('Edges are created')
+    return edges
 
-# Creating the base curves and segments
-# Segmentkeys shows what points form an edge (as opposed to the fillet arc)
-segmentkeys = [(0, 1), (1, 2), (4, 5), (5, 6), (6, 7), (7, 0)]
 
-segments = []
-for key in segmentkeys:
-    segments.append(OCC.GC.GC_MakeSegment(pnts[key[0]], pnts[key[1]]))
+def makeWire(edges):
+    """ Creating Wire
+    
+    Note the edges have to be added in an order than default. I chose the keep
+    the edge numbering in a sensible format (the format shown in the diffuser
+    visualization). However, wire.Add() requires that each edge be connected to
+    the current wire. The current order goes around the physical loop starting at
+    edge0
+    """
 
-# Adds edge6, which is the fillet arc
-segments.append(OCC.GC.GC_MakeArcOfCircle(pnts[2], pnts[3], pnts[4]))
+    wire = BRepBuilderAPI_MakeWire()
+    edgeorder = (0, 1, 6, 2, 3, 4, 5)
+    for edgen in edgeorder:
+        wire.Add(edges[edgen].Edge())
+    if args.v >= 1: print('Wire are created')
+    return wire
 
-# Creating edges. Could also do this directly from points
-edges = []
-for seg in segments:
-    edges.append(BRepBuilderAPI_MakeEdge(seg.Value()))
 
-if args.v >= 1: print('Edges are created')
-# Creating Wire
-# Note the edges have to be added in an order than default. I chose the keep
-# the edge numbering in a sensible format (the format shown in the diffuser
-# visualization). However, wire.Add() requires that each edge be connected to
-# the current wire. The current order goes around the physical loop starting at
-# edge0
+def makeFacefromWire(wire):
+    """ Create face from Wire"""
 
-wire = BRepBuilderAPI_MakeWire()
-edgeorder = (0, 1, 6, 2, 3, 4, 5)
-for edgen in edgeorder:
-    wire.Add(edges[edgen].Edge())
+    face = BRepBuilderAPI_MakeFace(wire.Wire())
+    if args.v >= 1: print('Face are created')
 
-if args.v >= 1: print('Wire are created')
-# Create face from Wire
-face = BRepBuilderAPI_MakeFace(wire.Wire())
-if args.v >= 1: print('Face are created')
+    return face
 
-# Get X axis, which face will be revolved around
-xaxis = OCC.gp.gp_OX()
 
-# Revolve the face around the xaxis
-diffuser = BRepPrimAPI_MakeRevol(face.Face(), xaxis)
-if args.v >= 1: print('Geometry is created')
+def makeRevolve(face):
+    # Get X axis, which face will be revolved around
+    xaxis = OCC.gp.gp_OX()
+
+    # Revolve the face around the xaxis
+    diffuser = BRepPrimAPI_MakeRevol(face.Face(), xaxis)
+    if args.v >= 1: print('Geometry is created')
+    return (diffuser)
+
+
+###################################
+#-----------Meshing Functions
+###################################
+
+
+def makeIncrementalMesh(shape, lindefl=0.1, angdefl=.07):
+    """ Make mesh using BRepMesh_IncrementalMesh 
+    
+     BRepMesh_IncrementalMesh was found to have some issues with the
+     transitions radius (basically turning it into a chamfer instead,
+     getting rid of the actual curvature), so SMESH was then explored.
+
+     lindefl = Linear Deflection Setting
+     angdefl = Angular Deflection Setting
+    """
+
+    try:
+        mesh = BRepMesh_IncrementalMesh(diffuser.Shape(), lindefl, True,
+                                        angdefl, False)
+    except:
+        print('Mesh failed')
+    else:
+        if args.v >= 1:
+            print(f'\nDiffuser shape has been meshed.')
+    return mesh
+
+
+def makeSMESH(shape):
+    """ Make mesh using SMESH
+
+    Most of this was taken from core_mesh_surfacic.py in pythonocc-demos
+    """
+    aMeshGen = SMESH_Gen()
+    aMesh = aMeshGen.CreateMesh(0, True)
+    # 1D
+    # an1DHypothesis = StdMeshers_Arithmetic1D(0, 0, aMeshGen)  # discretization of the wire
+    # an1DHypothesis.SetLength(0.1, False) # the smallest distance between 2 points
+    # an1DHypothesis.SetLength(0.5, True)  # the longest distance between 2 points
+    an1DHypothesis = StdMeshers_MaxLength(0, 0, aMeshGen)
+    an1DHypothesis.SetLength(10)
+    an1DAlgo = StdMeshers_Regular_1D(1, 0, aMeshGen)  # interpolation
+    # 2D
+    a2dHypothseis = StdMeshers_TrianglePreference(
+        2, 0, aMeshGen)  # define the boundary
+    a2dAlgo = StdMeshers_MEFISTO_2D(3, 0, aMeshGen)
+    # alculate mesh
+    aMesh.ShapeToMesh(diffuser.Shape())
+    # Assign hyptothesis to mesh
+    aMesh.AddHypothesis(diffuser.Shape(), 0)
+    aMesh.AddHypothesis(diffuser.Shape(), 1)
+    aMesh.AddHypothesis(diffuser.Shape(), 2)
+    aMesh.AddHypothesis(diffuser.Shape(), 3)
+    # Compute the data
+    aMeshGen.Compute(aMesh, aMesh.GetShapeToMesh())
+    return aMesh
+
 
 #######################################################
 #----------------Writing the Geometry to CAD
 #######################################################
 
-# Initialize writer and add the diffuser shape. 
 
-if filetype == 'STEP':
+def writeSTEP(filepath):
     # STEPControl_AsIs says to make the STEP model the same geometry type as the
     # shape (ie. a solid Shape should be a STEP Solid)
     writer = STEPControl_Writer()
@@ -253,56 +325,35 @@ if filetype == 'STEP':
         if args.v >= 1:
             print(f'\nSTEP file was successfully saved to:\n {filepath}')
 
-elif filetype == 'stl':
-    mesh = 'SMESH'
-    if mesh == 'Incremental':
-        # Linear Deflection Setting
-        lindefl = .01
-        # Angular Deflection Setting
-        angdefl = .07
-        try:
-            mesh = BRepMesh_IncrementalMesh(diffuser.Shape(), lindefl, True, angdefl, False)
-        except:
-            print('Mesh failed')
-        else:
-            if args.v >= 1:
-                print(f'\nDiffuser shape has been meshed.')
+
+def writestl(filepath, mesh):
+    """ Write stl of IncrementalMesh 
+
+    Note: this is for IncrementalMesh files only. SMESH files have their own
+    built in `.ExportStl()` method for this purpose 
+    """
+
+    writer = StlAPI_Writer()
+    writer.SetASCIIMode(True)
+
+    try:
+        writer.Write(mesh.Shape(), filepath.as_posix())
+    except:
+        print('Write failed')
+    else:
+        if args.v >= 1:
+            print(f'\nstl file was successfully saved to:\n {filepath}')
 
 
-        writer = StlAPI_Writer()
-        writer.SetASCIIMode(True)
+####################################
+#-----------Misc Geo Functions
+####################################
 
-        try:
-            writer.Write(mesh.Shape(), filepath.as_posix())
-        except:
-            print('Write failed')
-        else:
-            if args.v >= 1:
-                print(f'\nstl file was successfully saved to:\n {filepath}')
 
-    elif mesh == 'SMESH':
-        aMeshGen = SMESH_Gen()
-        aMesh = aMeshGen.CreateMesh(0, True)
-        # 1D
-        # an1DHypothesis = StdMeshers_Arithmetic1D(0, 0, aMeshGen)  # discretization of the wire
-        # an1DHypothesis.SetLength(0.1, False) # the smallest distance between 2 points
-        # an1DHypothesis.SetLength(0.5, True)  # the longest distance between 2 points
-        an1DHypothesis = StdMeshers_MaxLength(0, 0, aMeshGen)
-        an1DHypothesis.SetLength(10)
-        an1DAlgo = StdMeshers_Regular_1D(1, 0, aMeshGen)  # interpolation
-        # 2D
-        a2dHypothseis = StdMeshers_TrianglePreference(2, 0, aMeshGen)  # define the boundary
-        a2dAlgo = StdMeshers_MEFISTO_2D(3, 0, aMeshGen)
-        # alculate mesh
-        aMesh.ShapeToMesh(diffuser.Shape())
-        # Assign hyptothesis to mesh
-        aMesh.AddHypothesis(diffuser.Shape(), 0)
-        aMesh.AddHypothesis(diffuser.Shape(), 1)
-        aMesh.AddHypothesis(diffuser.Shape(), 2)
-        aMesh.AddHypothesis(diffuser.Shape(), 3)
-        # Compute the data
-        aMeshGen.Compute(aMesh, aMesh.GetShapeToMesh())
-        # aMesh.ExportSTL(filepath.as_posix(), True)
+def getFaceArea(face):
+    system = GProp_GProps
+    brepgprop_SurfaceProperties(face, system)
+    return (system.Mass())
 
 
 #####################################
