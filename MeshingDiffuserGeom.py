@@ -21,6 +21,10 @@ from OCC.StdMeshers import (StdMeshers_Arithmetic1D,
 from OCC.GProp import GProp_GProps
 from OCC.BRepGProp import brepgprop_SurfaceProperties
 
+import OCCUtils
+
+from OCC.TopoDS import TopoDS_Face
+
 # Here is an example script of using pythonocc to create a conical diffuser
 # from nothing and save it as a STEP file. The diffuser is created via a
 # revolve of the initial geometry.
@@ -123,6 +127,12 @@ elif args.TEST:
     filletr = 20
     filepath = Path('testingSMESH.stl').resolve()
     filetype = 'stl'
+    makeDiffuser_kwargs = {
+        'radii': (inletr, outletr),
+        'lengths': (inletl, outletl),
+        'phi': phi,
+        'transitionr': filletr
+    }
 
 if args.v >= 1:
     inputs = {
@@ -248,6 +258,15 @@ def makeRevolve(face):
     return (diffuser)
 
 
+def makeDiffuser(radii, lengths, transitionr, phi):
+    pnts = makePoints(radii, lengths, transitionr, phi)
+    edges = makeEdges(pnts)
+    wire = makeWire(edges)
+    face = makeFacefromWire(wire)
+    diffuser = makeRevolve(face)
+    return diffuser
+
+
 ###################################
 #-----------Meshing Functions
 ###################################
@@ -310,7 +329,9 @@ def makeSMESH(shape):
 #######################################################
 
 
-def writeSTEP(filepath):
+def writeSTEP(filepath, shape):
+    """ Write STEP file of the shape"""
+
     # STEPControl_AsIs says to make the STEP model the same geometry type as the
     # shape (ie. a solid Shape should be a STEP Solid)
     writer = STEPControl_Writer()
@@ -345,15 +366,38 @@ def writestl(filepath, mesh):
             print(f'\nstl file was successfully saved to:\n {filepath}')
 
 
+if args.TEST:
+    diffuser = makeDiffuser(**makeDiffuser_kwargs)
+
 ####################################
 #-----------Misc Geo Functions
 ####################################
 
 
 def getFaceArea(face):
-    system = GProp_GProps
+    """ Return the area of the face object given """
+
+    system = GProp_GProps()
     brepgprop_SurfaceProperties(face, system)
     return (system.Mass())
+
+
+def returnSmallestFace(shape):
+    """ Return ID# of the smallest face in the shape"""
+#TODO return the face object itself
+
+    topology = OCCUtils.Topo(shape)
+    for n, face in enumerate(topology.faces()):
+        assert isinstance(face, TopoDS_Face)
+        facearea = getFaceArea(face)
+        if n == 0:
+            maxarea = facearea
+            facenumber = n
+        elif facearea < maxarea:
+            maxarea = facearea
+            facenumber = n
+
+    return facenumber
 
 
 #####################################
