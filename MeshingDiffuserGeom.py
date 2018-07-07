@@ -384,7 +384,6 @@ def getFaceArea(face):
 
 def returnSmallestFace(shape):
     """ Return ID# of the smallest face in the shape"""
-#TODO return the face object itself
 
     topology = OCCUtils.Topo(shape)
     for n, face in enumerate(topology.faces()):
@@ -392,12 +391,12 @@ def returnSmallestFace(shape):
         facearea = getFaceArea(face)
         if n == 0:
             maxarea = facearea
-            facenumber = n
+            faceobj = face
         elif facearea < maxarea:
             maxarea = facearea
-            facenumber = n
+            faceobj = face
 
-    return facenumber
+    return face
 
 
 #####################################
