@@ -301,10 +301,8 @@ def makeSMESH(shape):
     """
     aMeshGen = SMESH_Gen()
     aMesh = aMeshGen.CreateMesh(0, True)
+    
     # 1D
-    # an1DHypothesis = StdMeshers_Arithmetic1D(0, 0, aMeshGen)  # discretization of the wire
-    # an1DHypothesis.SetLength(0.1, False) # the smallest distance between 2 points
-    # an1DHypothesis.SetLength(0.5, True)  # the longest distance between 2 points
     an1DHypothesis = StdMeshers_MaxLength(0, 0, aMeshGen)
     an1DHypothesis.SetLength(10)
     an1DAlgo = StdMeshers_Regular_1D(1, 0, aMeshGen)  # interpolation
